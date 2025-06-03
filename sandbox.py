@@ -1,135 +1,112 @@
-from docx import Document
-import requests
 from OpenOrchestrator.orchestrator_connection.connection import OrchestratorConnection
+from OpenOrchestrator.database.queues import QueueElement
 import os
-from requests_ntlm import HttpNtlmAuth
-import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timedelta
+import locale
+import pandas as pd
+import pyodbc
+import smtplib
+from email.message import EmailMessage
+import locale
 
-#Random deskproid
-deskproid = "2076"
+orchestrator_connection = OrchestratorConnection("BBR-tal-bot", os.getenv('OpenOrchestratorSQL'),os.getenv('OpenOrchestratorKey'), None)
+# orchestrator_connection.log_info('Starting process BBR-tal-bot ')
 
+# Sæt dansk lokalitet (virker kun hvis den er installeret i systemet)
+locale.setlocale(locale.LC_TIME, "da_DK.UTF-8")
 
-orchestrator_connection = OrchestratorConnection("AktindsigtAfgørelsesskriv", os.getenv('OpenOrchestratorSQL'),os.getenv('OpenOrchestratorKey'), None)
-aktbob_credentials = orchestrator_connection.get_credential("AktbobAPIKey")
-base_url = aktbob_credentials.username
-url = f"{base_url}/Database/Tickets?deskproId={deskproid}"
-headers = {
-  'ApiKey': aktbob_credentials.password
-}
+today = datetime.today()
 
-response = requests.request("GET", url, headers=headers)
-data = response.json()
+# Gå til første dag i denne måned og træk én dag fra → sidste dag i forrige måned
+first_of_this_month = today.replace(day=1)
+last_day_of_prev_month = first_of_this_month - timedelta(days=1)
 
-# Extracting caseNumber values
-case_numbers = [
-    case["caseNumber"] for case in data[0]["cases"] 
-    if case["sharepointFolderName"] is not None
-]
+# Forrige måned som to-cifret streng (fx "04")
+måned = last_day_of_prev_month.strftime("%m")
+år = last_day_of_prev_month.strftime("%Y")
+forrige_maaned_navn = last_day_of_prev_month.strftime("%B")
 
-if case_numbers:
-    case_details = []  # List to hold each case's details
-    go_credentials = orchestrator_connection.get_credential("GOAktApiUser")
-    API_url = orchestrator_connection.get_constant("GOApiURL").value
-    session = requests.Session()
-    session.auth = HttpNtlmAuth(go_credentials.username, go_credentials.password)
-    session.post(API_url, timeout=500)
-    for case in case_numbers:
-        response = session.get(f'{API_url}/_goapi/Cases/Metadata/{case}')
-        data = response.json()
-        metadata_xml = data["Metadata"]
-        # Parse the XML and fetch the ows_Title attribute
-        root = ET.fromstring(metadata_xml)
-        case_title = root.get("ows_Title")
-        modtaget_date = datetime.strptime(root.get("ows_Modtaget"), "%Y-%m-%d %H:%M:%S").strftime("%d-%m-%Y")
-        aktindsigt_decision = "Your Aktindsigt Decision Here"  # Customize this as needed
+# Read the SQL query from file
+sql_file_path_bunken = "1. BBR - bunken.sql"
+sql_file_path_færdigbehandlede = "2. BBR - færdigbehandlede i perioden.sql"
+with open(sql_file_path_bunken, "r", encoding="utf-8") as file:
+    query_bunken = file.read()
+with open(sql_file_path_færdigbehandlede, "r", encoding="utf-8") as file:
+    query_færdigbehandlede = file.read()
 
-        # Add the details to the list
-        case_details.append([case, case_title, modtaget_date, aktindsigt_decision])
-        
-print(case_numbers)
+# Replace placeholders with actual date values, ensuring they are formatted correctly
+query_færdigbehandlede = query_færdigbehandlede.replace("@år", f"{år}").replace("@måned", f"{måned}")  # Add single quotes
 
-# Load the document
-doc = Document('Document.docx')
+# Database connection setup
+sql_server = orchestrator_connection.get_constant("SqlServer").value
+conn_str = 'DRIVER={ODBC Driver 17 for SQL Server};' + f'SERVER={sql_server};DATABASE=LOIS;Trusted_Connection=yes'
+conn = pyodbc.connect(conn_str)
+cursor = conn.cursor()
 
-# Define the variables for each unique placeholder
-afdeling = "Digitalisering"
-ansoegernavn = "John Doe"
-ansoegermail = "john.doe@example.com"
-dato = datetime.today()
-deskprotitel = "Ejendomssag"
-besvarelse = "Din anmodning er blevet godkendt."
-afdelingsmail = "digitalisering@test.dk"
-afdelingstelefon = "1234 5678"
+#Getting bunken
+cursor.execute(query_bunken)
+rows_bunken = cursor.fetchall()
+data_bunken = pd.read_sql(query_bunken, conn)
 
-# Function to replace text in runs while preserving formatting
-def replace_text_in_paragraph(paragraph, placeholder, replacement):
-    full_text = ''.join(run.text for run in paragraph.runs)
-    if placeholder in full_text:
-        # Replace the text in the full text
-        full_text = full_text.replace(placeholder, replacement)
-        
-        # Clear existing runs and split the replacement text back into new runs
-        for run in paragraph.runs:
-            run.text = ''  # Clear the text in each run
-        paragraph.runs[0].text = full_text  # Set the text in the first run
+#Getting færdigbehandlede
+cursor.execute(query_færdigbehandlede)
+rows_færdigbehandlede = cursor.fetchall()
+data_færdigbehandlede = pd.read_sql(query_færdigbehandlede, conn)
 
-def insert_table_at_placeholder(doc, placeholder, case_details):
-    for paragraph in doc.paragraphs:
-        if placeholder in paragraph.text:
-            # Clear the paragraph's text and insert the table
-            paragraph.clear()  # Clear the placeholder text
+# Step 5: Close database connection
+cursor.close()
+conn.close() 
 
-            # Add a table at this location
-            table = doc.add_table(rows=1, cols=4)
-            table.style = 'Table Grid'  # Use a style of your choice
+bunke_tilladelser = data_bunken['Tilladelsessager'][0]
+bunke_afslutninger = data_bunken['Afslutningssager'][0]
+færdige_tilladelser = data_færdigbehandlede['Tilladelsessager'][0]
+færdige_afslutninger = data_færdigbehandlede['Afslutningssager'][0]
 
-            # Define the header row
-            header_cells = table.rows[0].cells
-            header_cells[0].text = "Sagsnummer"
-            header_cells[1].text = "Sagstitel"
-            header_cells[2].text = "Sagsdato"
-            header_cells[3].text = "Aktindsigt"
+# SMTP Configuration (from your provided details)
+SMTP_SERVER = "smtp.adm.aarhuskommune.dk"
+SMTP_PORT = 25
+SCREENSHOT_SENDER = "bbr-tal-bot@aarhus.dk"
+subject = "Nye tal fra BBR"
 
-            # Add a row for each case
-            for case_detail in case_details:
-                row_cells = table.add_row().cells
-                row_cells[0].text = case_detail[0]
-                row_cells[1].text = case_detail[1]
-                row_cells[2].text = case_detail[2]
-                row_cells[3].text = case_detail[3]
+html = f"""
+<html>
+  <body>
+    <p style="margin-bottom: 20px;">Hej Karina 👋</p>
+    <p>Her kommer månedens BBR-tal:</p>
 
-            # Insert the table after clearing the placeholder
-            paragraph._element.addnext(table._element)
-            break
+    <div style="margin-top: 20px;">
+      <strong>Bunken</strong><br>
+      Tilladelsessager: <strong>{bunke_tilladelser}</strong><br>
+      Afslutningssager: <strong>{bunke_afslutninger}</strong>
+    </div>
+
+    <div style="margin-top: 20px;">
+      <strong>Færdigbehandlet i {forrige_maaned_navn}</strong><br>
+      Tilladelsessager: <strong>{færdige_tilladelser}</strong><br>
+      Afslutningssager: <strong>{færdige_afslutninger}</strong>
+    </div>
+
+    <p style="margin-top: 40px;">Med venlig hilsen</p>
+    <p> Laura </p>
+  </body>
+</html>
+"""
 
 
-insert_table_at_placeholder(doc, "[Sagstabel]", case_details)
+# Create the email message
+UdviklerMail = orchestrator_connection.get_constant('balas').value
+msg = EmailMessage()
+msg['To'] = UdviklerMail
+msg['From'] = SCREENSHOT_SENDER
+msg['Subject'] = subject
+msg.set_content("Please enable HTML to view this message.")
+msg.add_alternative(html, subtype='html')
+msg['Reply-To'] = UdviklerMail
+msg['Bcc'] = UdviklerMail
 
-# Replace placeholders in paragraphs
-for paragraph in doc.paragraphs:
-    replace_text_in_paragraph(paragraph, '[Afdeling]', afdeling)
-    replace_text_in_paragraph(paragraph, '[Ansøgernavn]', ansoegernavn)
-    replace_text_in_paragraph(paragraph, '[Ansøgermail]', ansoegermail)
-    replace_text_in_paragraph(paragraph, '[Dato]', dato)
-    replace_text_in_paragraph(paragraph, '[Deskprotitel]', deskprotitel)
-    replace_text_in_paragraph(paragraph, '[Besvarelse]', besvarelse)
-    replace_text_in_paragraph(paragraph, '[Afdelingsmail]', afdelingsmail)
-    replace_text_in_paragraph(paragraph, '[Afdelingstelefon]', afdelingstelefon)
-
-# Replace placeholders in tables
-for table in doc.tables:
-    for row in table.rows:
-        for cell in row.cells:
-            for paragraph in cell.paragraphs:
-                replace_text_in_paragraph(paragraph, '[Afdeling]', afdeling)
-                replace_text_in_paragraph(paragraph, '[Ansøgernavn]', ansoegernavn)
-                replace_text_in_paragraph(paragraph, '[Ansøgermail]', ansoegermail)
-                replace_text_in_paragraph(paragraph, '[Dato]', dato)
-                replace_text_in_paragraph(paragraph, '[Deskprotitel]', deskprotitel)
-                replace_text_in_paragraph(paragraph, '[Besvarelse]', besvarelse)
-                replace_text_in_paragraph(paragraph, '[Afdelingsmail]', afdelingsmail)
-                replace_text_in_paragraph(paragraph, '[Afdelingstelefon]', afdelingstelefon)
-
-# Save the modified document
-doc.save('ModifiedDocument.docx')
+# Send the email using SMTP
+try:
+    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as smtp:
+        smtp.send_message(msg)
+except Exception as e:
+    orchestrator_connection.log_info(f"Failed to send success email: {e}")
