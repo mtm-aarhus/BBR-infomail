@@ -96,8 +96,9 @@ def process(orchestrator_connection: OrchestratorConnection) -> None:
 
     # Create the email message
     UdviklerMail = orchestrator_connection.get_constant('balas').value
+    modtagermail = orchestrator_connection.get_constant('KarinaRavnRygaardMail').value
     msg = EmailMessage()
-    msg['To'] = UdviklerMail
+    msg['To'] = modtagermail
     msg['From'] = SCREENSHOT_SENDER
     msg['Subject'] = subject
     msg.set_content("Please enable HTML to view this message.")
