@@ -96,14 +96,16 @@ def process(orchestrator_connection: OrchestratorConnection) -> None:
 
     # Create the email message
     UdviklerMail = orchestrator_connection.get_constant('balas').value
-    modtagermail = orchestrator_connection.get_constant('KarinaRavnRygaardMail').value
+    KarinaMail = orchestrator_connection.get_constant('KarinaRavnRygaardMail').value
+    MathiasMail = orchestrator_connection.get_constant('mathiasmullermail')
     msg = EmailMessage()
-    msg['To'] = modtagermail
+    msg['To'] = MathiasMail
     msg['From'] = SCREENSHOT_SENDER
     msg['Subject'] = subject
     msg.set_content("Please enable HTML to view this message.")
     msg.add_alternative(html, subtype='html')
     msg['Reply-To'] = UdviklerMail
+    msg['Cc'] = KarinaMail
     msg['Bcc'] = UdviklerMail
 
     # Send the email using SMTP
