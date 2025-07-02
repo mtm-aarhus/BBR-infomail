@@ -97,7 +97,7 @@ def process(orchestrator_connection: OrchestratorConnection) -> None:
     # Create the email message
     UdviklerMail = orchestrator_connection.get_constant('balas').value
     KarinaMail = orchestrator_connection.get_constant('KarinaRavnRygaardMail').value
-    MathiasMail = orchestrator_connection.get_constant('mathiasmullermail')
+    MathiasMail = orchestrator_connection.get_constant('mathiasmullermail').value
     msg = EmailMessage()
     msg['To'] = MathiasMail
     msg['From'] = SCREENSHOT_SENDER
